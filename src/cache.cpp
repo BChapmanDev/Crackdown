@@ -1,0 +1,174 @@
+#include "cache.h"
+
+#include <rex/logging.h>
+#include <rex/math.h>
+
+// Allows use of X_STATUS macros, otherwise it can't find the X_STATUS type used. 
+using rex::X_STATUS;
+
+void CacheFileData::Destroy()
+{
+	data_.clear();
+}
+
+X_STATUS CacheFileData::ReadSync(void* buffer, size_t buffer_length, size_t byte_offset, size_t* out_bytes_read)
+{
+	if (byte_offset >= data_.size()) {
+		return X_STATUS_END_OF_FILE;
+	}
+
+	size_t real_length = std::min(buffer_length, data_.size() - byte_offset);
+	std::memcpy(buffer, data_.data() + byte_offset, real_length);
+	*out_bytes_read = real_length;
+
+	return X_STATUS_SUCCESS;
+}
+
+X_STATUS CacheFileData::WriteSync(const void* buffer, size_t buffer_length, size_t byte_offset, size_t* out_bytes_written)
+{
+	if (byte_offset >= data_.size()) {
+		return X_STATUS_END_OF_FILE;
+	}
+
+	if (!mutex_.try_lock())
+	{
+		return X_STATUS_ACCESS_DENIED;
+	}
+
+	auto writeEnd = byte_offset + buffer_length;
+	if (writeEnd >= data_.size())
+	{
+		data_.resize(writeEnd);
+	}
+
+	std::memcpy(data_.data() + byte_offset, buffer, buffer_length);
+	*out_bytes_written = buffer_length;
+
+	mutex_.unlock();
+
+	return X_STATUS_SUCCESS;
+}
+
+X_STATUS CacheFileData::SetLength(size_t length)
+{
+	data_.resize(length);
+
+	return X_STATUS_SUCCESS;
+}
+
+CacheFile::CacheFile(uint32_t file_access, CacheEntry* entry, std::shared_ptr<CacheFileData> data) : File(file_access, entry), data_(std::move(data))
+{
+}
+
+void CacheFile::Destroy()
+{
+}
+
+X_STATUS CacheFile::ReadSync(void* buffer, size_t buffer_length, size_t byte_offset, size_t* out_bytes_read)
+{
+	if (!(file_access_ & (rex::filesystem::FileAccess::kGenericRead | rex::filesystem::FileAccess::kFileReadData))) {
+		return X_STATUS_ACCESS_DENIED;
+	}
+
+	return data_->ReadSync(buffer, buffer_length, byte_offset, out_bytes_read);
+}
+
+X_STATUS CacheFile::WriteSync(const void* buffer, size_t buffer_length, size_t byte_offset, size_t* out_bytes_written)
+{
+	if (!(file_access_ & (rex::filesystem::FileAccess::kGenericWrite | rex::filesystem::FileAccess::kFileWriteData | rex::filesystem::FileAccess::kFileAppendData))) {
+		return X_STATUS_ACCESS_DENIED;
+	}
+
+	return data_->WriteSync(buffer, buffer_length, byte_offset, out_bytes_written);
+}
+
+X_STATUS CacheFile::SetLength(size_t length)
+{
+	if (!(file_access_ & (rex::filesystem::FileAccess::kGenericWrite | rex::filesystem::FileAccess::kFileWriteData))) {
+		return X_STATUS_ACCESS_DENIED;
+	}
+
+	return data_->SetLength(length);
+}
+
+CacheEntry::CacheEntry(rex::filesystem::Device* device, Entry* parent, const std::string_view path) : Entry(device, parent, path)
+{
+}
+
+CacheEntry* CacheEntry::Create(rex::filesystem::Device* device, Entry* parent, const std::string_view path, uint32_t attribute)
+{
+	auto entry = new CacheEntry(device, parent, path);
+
+	entry->create_timestamp_ = 0;
+	entry->access_timestamp_ = 0;
+	entry->write_timestamp_ = 0;
+	entry->attributes_ = attribute;
+	if (!(attribute & rex::filesystem::kFileAttributeDirectory)) {
+		entry->size_ = 0;
+		entry->allocation_size_ = device->bytes_per_sector();
+
+		entry->data_ = std::make_shared<CacheFileData>();
+	}
+
+	return entry;
+}
+
+X_STATUS CacheEntry::Open(uint32_t desired_access, rex::filesystem::File** out_file)
+{
+	if (is_read_only() && (desired_access & (rex::filesystem::FileAccess::kFileWriteData | rex::filesystem::FileAccess::kFileAppendData))) {
+		return X_STATUS_ACCESS_DENIED;
+	}
+
+	*out_file = new CacheFile(desired_access, this, data_);
+
+	return X_STATUS_SUCCESS;
+}
+
+void CacheEntry::update()
+{
+	if (attributes_ & rex::filesystem::kFileAttributeDirectory) {
+		size_ = data_->GetSize();
+		allocation_size_ = rex::round_up(size_, device()->bytes_per_sector());
+	}
+}
+
+std::unique_ptr<rex::filesystem::Entry> CacheEntry::CreateEntryInternal(const std::string_view name, uint32_t attributes)
+{
+	return std::unique_ptr<Entry>(Create(device_, this, name, attributes));
+}
+
+bool CacheEntry::DeleteEntryInternal(rex::filesystem::Entry* entry)
+{
+	if (data_)
+	{
+		data_.reset();
+	}
+
+	return true;
+}
+
+CacheDevice::CacheDevice(const std::string_view mount_path) : Device(mount_path)
+{
+	// Convert `\\CACHE` into `CACHE`
+	auto lastSlash = mount_path.find_last_of('\\');
+	name_ = lastSlash == std::string::npos ? mount_path : mount_path.substr(lastSlash + 1);
+}
+
+bool CacheDevice::Initialize()
+{
+	auto root_entry = new CacheEntry(this, nullptr, "");
+	root_entry->attributes_ = rex::filesystem::kFileAttributeDirectory;
+	root_entry_ = std::unique_ptr<rex::filesystem::Entry>(root_entry);
+
+	return true;
+}
+
+void CacheDevice::Dump(rex::string::StringBuffer* string_buffer)
+{
+	root_entry_->Dump(string_buffer, 0);
+}
+
+rex::filesystem::Entry* CacheDevice::ResolvePath(const std::string_view path)
+{
+	return root_entry_->ResolvePath(path);
+}
