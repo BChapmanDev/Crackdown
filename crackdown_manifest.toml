@@ -1,0 +1,10 @@
+# Crackdown TU0, migrated from ReXGlue 0.2.2 to 0.10.0.
+[project]
+name = "crackdown"
+sdk_version = "0.10.0"
+game_root = "assets"
+
+[entrypoint]
+file_path = "assets/default.xex"
+out_directory_path = "generated/default"
+includes = ["crackdown_config.toml"]

@@ -64,22 +64,22 @@ void CacheFile::Destroy()
 {
 }
 
-X_STATUS CacheFile::ReadSync(void* buffer, size_t buffer_length, size_t byte_offset, size_t* out_bytes_read)
+X_STATUS CacheFile::ReadSync(std::span<uint8_t> buffer, size_t byte_offset, size_t* out_bytes_read)
 {
 	if (!(file_access_ & (rex::filesystem::FileAccess::kGenericRead | rex::filesystem::FileAccess::kFileReadData))) {
 		return X_STATUS_ACCESS_DENIED;
 	}
 
-	return data_->ReadSync(buffer, buffer_length, byte_offset, out_bytes_read);
+	return data_->ReadSync(buffer.data(), buffer.size(), byte_offset, out_bytes_read);
 }
 
-X_STATUS CacheFile::WriteSync(const void* buffer, size_t buffer_length, size_t byte_offset, size_t* out_bytes_written)
+X_STATUS CacheFile::WriteSync(std::span<const uint8_t> buffer, size_t byte_offset, size_t* out_bytes_written)
 {
 	if (!(file_access_ & (rex::filesystem::FileAccess::kGenericWrite | rex::filesystem::FileAccess::kFileWriteData | rex::filesystem::FileAccess::kFileAppendData))) {
 		return X_STATUS_ACCESS_DENIED;
 	}
 
-	return data_->WriteSync(buffer, buffer_length, byte_offset, out_bytes_written);
+	return data_->WriteSync(buffer.data(), buffer.size(), byte_offset, out_bytes_written);
 }
 
 X_STATUS CacheFile::SetLength(size_t length)
